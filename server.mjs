@@ -30,9 +30,6 @@ app.get('/api/products', (req, res) => {
   if (has_rear_roller === 'true') {
     query += ' AND has_rear_roller = 1';
   }
-
-  query += ' LIMIT 10';
-
   db.all(query, params, (err, rows) => {
     if (err) {
       res.status(500).json({ error: 'Database query failed' });
