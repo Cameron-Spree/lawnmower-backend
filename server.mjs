@@ -29,19 +29,19 @@ app.get('/api/products', (req, res) => {
       name,
       category,
       price,
+      image_url AS imageUrl,           -- Corrected: Maps image_url from DB to imageUrl in response
+      product_url AS productUrl,       -- Corrected: Maps product_url from DB to productUrl in response
       description,
-      imageUrl,
-      productUrl,
       brand,
-      powerSource,
-      driveType,
-      cuttingWidthCm,
-      hasRearRoller,
+      power_source AS powerSource,     -- Corrected: Maps power_source from DB to powerSource in response
+      drive_type AS driveType,         -- Corrected: Maps drive_type from DB to driveType in response
+      cutting_width_cm AS cuttingWidthCm, -- Corrected: Maps cutting_width_cm from DB to cuttingWidthCm in response
+      has_rear_roller AS hasRearRoller, -- Corrected: Maps has_rear_roller from DB to hasRearRoller in response
       configuration,
-      batterySystem,
-      idealFor,
-      bestFeature,
-      attributes
+      battery_system AS batterySystem, -- Corrected: Maps battery_system from DB to batterySystem in response
+      ideal_for AS idealFor,           -- Corrected: Maps ideal_for from DB to idealFor in response
+      best_feature AS bestFeature      -- Corrected: Maps best_feature from DB to bestFeature in response
+      -- Removed 'attributes' as it was not in your provided column list
     FROM Lawnmowers WHERE 1=1
   `;
   const params = [];
@@ -82,8 +82,8 @@ app.get('/api/products', (req, res) => {
     query += ` AND (
       lower(name) LIKE ? OR
       lower(description) LIKE ? OR
-      lower(idealFor) LIKE ? OR
-      lower(bestFeature) LIKE ?
+      lower(ideal_for) LIKE ? OR  -- Corrected: ideal_for
+      lower(best_feature) LIKE ?  -- Corrected: best_feature
     )`;
     params.push(searchKeywords, searchKeywords, searchKeywords, searchKeywords);
   }
@@ -100,32 +100,32 @@ app.get('/api/products', (req, res) => {
     params.push(brand);
   }
 
-  // Filter by power source
+  // Filter by power source (uses the query param 'powerSource' but filters by DB column 'power_source')
   if (powerSource) {
-    query += ' AND lower(powerSource) = lower(?)';
+    query += ' AND lower(power_source) = lower(?)'; // Corrected: power_source
     params.push(powerSource);
   }
 
-  // Filter by drive type
+  // Filter by drive type (uses the query param 'driveType' but filters by DB column 'drive_type')
   if (driveType) {
-    query += ' AND lower(driveType) = lower(?)';
+    query += ' AND lower(drive_type) = lower(?)'; // Corrected: drive_type
     params.push(driveType);
   }
 
-  // Filter by cutting width (numerical comparison)
+  // Filter by cutting width (uses the query param 'cuttingWidthCm' but filters by DB column 'cutting_width_cm')
   if (cuttingWidthCm && !isNaN(parseFloat(cuttingWidthCm))) {
-    query += ' AND cuttingWidthCm = ?';
+    query += ' AND cutting_width_cm = ?'; // Corrected: cutting_width_cm
     params.push(parseFloat(cuttingWidthCm));
   } else if (cuttingWidthCm && isNaN(parseFloat(cuttingWidthCm))) {
       return res.status(400).json({ error: 'Invalid value for cuttingWidthCm. Must be a number.' });
   }
 
 
-  // Filter by hasRearRoller (boolean interpretation)
+  // Filter by hasRearRoller (uses the query param 'hasRearRoller' but filters by DB column 'has_rear_roller')
   if (hasRearRoller === 'true') {
-    query += ' AND hasRearRoller = 1';
+    query += ' AND has_rear_roller = 1'; // Corrected: has_rear_roller
   } else if (hasRearRoller === 'false') {
-    query += ' AND hasRearRoller = 0';
+    query += ' AND has_rear_roller = 0'; // Corrected: has_rear_roller
   } else if (hasRearRoller) {
       return res.status(400).json({ error: 'Invalid value for hasRearRoller. Must be "true" or "false".' });
   }
@@ -140,7 +140,8 @@ app.get('/api/products', (req, res) => {
       case 'name':
         orderByClause = 'name';
         break;
-      // Add other sortable fields as needed
+      // You can add other sortable fields using their database column names here if needed
+      // e.g., case 'category': orderByClause = 'category'; break;
       default:
         // Default to no specific sort or return an error if sortBy is invalid
         return res.status(400).json({ error: `Invalid sortBy parameter: ${sortBy}` });
@@ -149,9 +150,7 @@ app.get('/api/products', (req, res) => {
     const sortOrder = (order && order.toLowerCase() === 'desc') ? 'DESC' : 'ASC';
     query += ` ORDER BY ${orderByClause} ${sortOrder}`;
   } else {
-    // Default relevance sorting (can be more complex, e.g., based on views, sales, etc.)
-    // For now, no specific default relevance sorting is implemented beyond database's natural order
-    // You could add `ORDER BY SomeRelevanceColumn DESC` here if available
+    // Default relevance sorting
   }
 
 
