@@ -75,17 +75,33 @@ app.get('/api/products', (req, res) => {
     return; // Exit after sending single product response
   }
 
-  // General text search (keywords)
+  // --- START OF KEYWORD SEARCH ENHANCEMENT ---
   if (keywords) {
-    const searchKeywords = `%${keywords.toLowerCase()}%`;
-    query += ` AND (
-      lower(name) LIKE ? OR
-      lower(description) LIKE ? OR
-      lower(ideal_for) LIKE ? OR
-      lower(best_feature) LIKE ?
-    )`;
-    params.push(searchKeywords, searchKeywords, searchKeywords, searchKeywords);
+    // Split keywords into individual tokens (words)
+    const keywordTokens = keywords.toLowerCase().split(/\s+/).filter(token => token.length > 0);
+
+    if (keywordTokens.length > 0) {
+      const fieldsToSearch = ['name', 'description', 'ideal_for', 'best_feature'];
+      const fieldSearchConditions = [];
+
+      // Build conditions for each field: (field LIKE %token1% AND field LIKE %token2% ...)
+      fieldsToSearch.forEach(field => {
+        const tokenLikeConditions = keywordTokens.map(() => `lower(${field}) LIKE ?`);
+        if (tokenLikeConditions.length > 0) {
+          fieldSearchConditions.push(`(${tokenLikeConditions.join(' AND ')})`);
+          // Add parameters for each token, for this specific field
+          keywordTokens.forEach(token => params.push(`%${token}%`));
+        }
+      });
+
+      // Combine all field conditions with OR
+      if (fieldSearchConditions.length > 0) {
+        query += ` AND (${fieldSearchConditions.join(' OR ')})`;
+      }
+    }
   }
+  // --- END OF KEYWORD SEARCH ENHANCEMENT ---
+
 
   // Strict category filtering (CRITICAL)
   if (category) {
@@ -121,9 +137,9 @@ app.get('/api/products', (req, res) => {
 
   // Corrected: Filter by hasRearRoller to match string values in database
   if (hasRearRoller === 'true') {
-    query += ' AND lower(has_rear_roller) = \'true\''; // Matches 'TRUE' or 'true' in DB
+    query += ' AND lower(has_rear_roller) = \'true\'';
   } else if (hasRearRoller === 'false') {
-    query += ' AND lower(has_rear_roller) = \'false\''; // Matches 'FALSE' or 'false' in DB
+    query += ' AND lower(has_rear_roller) = \'false\'';
   } else if (hasRearRoller) {
       return res.status(400).json({ error: 'Invalid value for hasRearRoller. Must be "true" or "false".' });
   }
