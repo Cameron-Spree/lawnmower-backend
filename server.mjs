@@ -3,6 +3,7 @@ import sqlite3 from 'sqlite3';
 import cors from 'cors';
 import path from 'path';
 import url from 'url';
+import { Pool } from 'pg'; // Import the Pool from 'pg'
 
 // Get __dirname equivalent in ES Modules
 const __filename = url.fileURLToPath(import.meta.url);
@@ -13,6 +14,24 @@ const dbPath = path.resolve(__dirname, 'lawnmowers.db');
 
 app.use(cors());
 app.use(express.json());
+
+// --- PostgreSQL Pool for Logging (NEW) ---
+// This connects to your external PostgreSQL database.
+// Vercel will inject DATABASE_URL from your environment variables.
+const logDbPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    // Required for some cloud providers like Supabase/Neon to connect securely
+    rejectUnauthorized: false,
+  },
+});
+
+logDbPool.on('error', (err) => {
+  console.error('Unexpected error on idle PostgreSQL client', err);
+  process.exit(-1); // Exit process if critical error
+});
+// --- END PostgreSQL Pool for Logging ---
+
 
 const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (err) => {
   if (err) {
@@ -172,5 +191,47 @@ app.get('/api/products', (req, res) => {
     res.json(rows);
   });
 });
+
+// --- NEW ENDPOINT FOR LOGGING ---
+app.post('/api/submit-debug-log', async (req, res) => {
+  const { logs, sessionId, userId } = req.body; // Expecting an array of log messages and optional session/user IDs
+
+  if (!logs || !Array.isArray(logs) || logs.length === 0) {
+    return res.status(400).json({ error: 'Invalid or empty logs array provided.' });
+  }
+
+  try {
+    const client = await logDbPool.connect();
+    try {
+      // Begin a transaction for multiple inserts (optional, but good practice)
+      await client.query('BEGIN');
+
+      for (const logEntry of logs) {
+        // You might want to stringify complex log objects if they aren't simple strings
+        const logMessage = typeof logEntry === 'string' ? logEntry : JSON.stringify(logEntry);
+        const timestamp = new Date().toISOString();
+
+        const insertQuery = `
+          INSERT INTO debug_logs (session_id, user_id, timestamp, log_message)
+          VALUES ($1, $2, $3, $4)
+        `;
+        await client.query(insertQuery, [sessionId, userId, timestamp, logMessage]);
+      }
+
+      await client.query('COMMIT');
+      res.status(200).json({ message: 'Logs received and stored successfully.' });
+    } catch (err) {
+      await client.query('ROLLBACK'); // Rollback on error
+      console.error('Error inserting logs into PostgreSQL:', err);
+      res.status(500).json({ error: 'Failed to store logs in database.' });
+    } finally {
+      client.release(); // Release client back to the pool
+    }
+  } catch (poolErr) {
+    console.error('Error connecting to PostgreSQL pool:', poolErr);
+    res.status(500).json({ error: 'Database connection error for logging.' });
+  }
+});
+// --- END NEW ENDPOINT ---
 
 export default app;
