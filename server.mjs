@@ -70,8 +70,8 @@ app.get('/api/products', (req, res) => {
     cuttingWidthCm,
     sortBy,
     order,
-    minPrice, // NEW
-    maxPrice  // NEW
+    minPrice,
+    maxPrice
   } = req.query;
 
   // Filter by productId (if provided, this should be the primary filter)
@@ -91,25 +91,45 @@ app.get('/api/products', (req, res) => {
     return;
   }
 
-  // --- START OF KEYWORD SEARCH ENHANCEMENT ---
+  // --- START OF KEYWORD SEARCH ENHANCEMENT (Updated for compound words) ---
   if (keywords) {
     const keywordTokens = keywords.toLowerCase().split(/\s+/).filter(token => token.length > 0);
+
     if (keywordTokens.length > 0) {
-      const fieldsToSearch = ['name', 'description', 'ideal_for', 'best_feature'];
+      // Define fields and whether they need space normalization
+      const fieldsToSearch = [
+        { name: 'name', normalizeSpaces: true },
+        { name: 'description', normalizeSpaces: true },
+        { name: 'ideal_for', normalizeSpaces: false }, // Unlikely to contain compound words with varying spaces
+        { name: 'best_feature', normalizeSpaces: false } // Unlikely to contain compound words with varying spaces
+      ];
       const fieldSearchConditions = [];
-      fieldsToSearch.forEach(field => {
-        const tokenLikeConditions = keywordTokens.map(() => `lower(${field}) LIKE ?`);
+
+      fieldsToSearch.forEach(fieldDef => {
+        const fieldName = fieldDef.name;
+        const needsNormalization = fieldDef.normalizeSpaces;
+
+        const tokenLikeConditions = keywordTokens.map(() => {
+          if (needsNormalization) {
+            // Apply REPLACE to remove spaces before comparison
+            return `lower(REPLACE(${fieldName}, ' ', '')) LIKE ?`;
+          }
+          return `lower(${fieldName}) LIKE ?`;
+        });
+
         if (tokenLikeConditions.length > 0) {
           fieldSearchConditions.push(`(${tokenLikeConditions.join(' AND ')})`);
           keywordTokens.forEach(token => params.push(`%${token}%`));
         }
       });
+
       if (fieldSearchConditions.length > 0) {
         query += ` AND (${fieldSearchConditions.join(' OR ')})`;
       }
     }
   }
   // --- END OF KEYWORD SEARCH ENHANCEMENT ---
+
 
   // Strict category filtering (CRITICAL)
   if (category) {
