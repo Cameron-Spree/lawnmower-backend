@@ -194,7 +194,7 @@ app.get('/api/products', (req, res) => {
 
 // --- NEW ENDPOINT FOR LOGGING ---
 app.post('/api/submit-debug-log', async (req, res) => {
-  const { logs, sessionId, userId } = req.body; // Expecting an array of log messages and optional session/user IDs
+  const { logs, sessionId, userId } = req.body; // Frontend sends these
 
   if (!logs || !Array.isArray(logs) || logs.length === 0) {
     return res.status(400).json({ error: 'Invalid or empty logs array provided.' });
@@ -203,29 +203,36 @@ app.post('/api/submit-debug-log', async (req, res) => {
   try {
     const client = await logDbPool.connect();
     try {
-      // Begin a transaction for multiple inserts (optional, but good practice)
       await client.query('BEGIN');
 
       for (const logEntry of logs) {
-        // You might want to stringify complex log objects if they aren't simple strings
-        const logMessage = typeof logEntry === 'string' ? logEntry : JSON.stringify(logEntry);
+        // --- START: Changes for log_level extraction ---
+        // Safely extract the log message and log level
+        const logMessage = typeof logEntry === 'string' ? logEntry : logEntry.message;
+        const logLevel = typeof logEntry === 'object' && logEntry.level ? logEntry.level : null; // This line extracts the 'level' property
+
+        // Ensure logMessage is always a string for the database
+        const finalLogMessage = typeof logMessage === 'string' ? logMessage : JSON.stringify(logMessage);
         const timestamp = new Date().toISOString();
 
+        // Updated INSERT query to include 'log_level' column
         const insertQuery = `
-          INSERT INTO debug_logs (session_id, user_id, timestamp, log_message)
-          VALUES ($1, $2, $3, $4)
+          INSERT INTO debug_logs (session_id, user_id, timestamp, log_message, log_level)
+          VALUES ($1, $2, $3, $4, $5)
         `;
-        await client.query(insertQuery, [sessionId, userId, timestamp, logMessage]);
+        // Pass 'logLevel' as the fifth parameter to the query
+        await client.query(insertQuery, [sessionId, userId, timestamp, finalLogMessage, logLevel]);
+        // --- END: Changes for log_level extraction ---
       }
 
       await client.query('COMMIT');
       res.status(200).json({ message: 'Logs received and stored successfully.' });
     } catch (err) {
-      await client.query('ROLLBACK'); // Rollback on error
+      await client.query('ROLLBACK');
       console.error('Error inserting logs into PostgreSQL:', err);
       res.status(500).json({ error: 'Failed to store logs in database.' });
     } finally {
-      client.release(); // Release client back to the pool
+      client.release();
     }
   } catch (poolErr) {
     console.error('Error connecting to PostgreSQL pool:', poolErr);
