@@ -15,19 +15,24 @@ const dbPath = path.resolve(__dirname, 'lawnmowers.db');
 app.use(cors());
 app.use(express.json());
 
-// --- PostgreSQL Pool for Logging (NEW) ---
+// --- PostgreSQL Pool for Logging ---
+// This connects to your external PostgreSQL database.
+// Vercel will inject DATABASE_URL from your environment variables.
 const logDbPool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
+    // Required for some cloud providers like Supabase/Neon to connect securely
     rejectUnauthorized: false,
   },
 });
 
 logDbPool.on('error', (err) => {
   console.error('Unexpected error on idle PostgreSQL client', err);
-  process.exit(-1);
+  // It's generally good practice to log the error but not necessarily exit the process
+  // unless it's a non-recoverable error for the entire application.
 });
 // --- END PostgreSQL Pool for Logging ---
+
 
 const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (err) => {
   if (err) {
@@ -78,6 +83,7 @@ app.get('/api/products', (req, res) => {
   if (productId) {
     query += ' AND id = ?';
     params.push(productId);
+    // Execute query immediately for single product lookup
     db.get(query, params, (err, row) => {
       if (err) {
         console.error("Database query failed:", err);
@@ -86,13 +92,14 @@ app.get('/api/products', (req, res) => {
       if (!row) {
         return res.status(404).json({ error: 'Product not found' });
       }
-      res.json([row]);
+      res.json([row]); // Return as an array for consistency
     });
-    return;
+    return; // Exit after sending single product response
   }
 
-  // --- START OF KEYWORD SEARCH ENHANCEMENT (Updated for compound words) ---
+  // --- START OF KEYWORD SEARCH ENHANCEMENT (Flexible AND logic across fields) ---
   if (keywords) {
+    // Split keywords into individual tokens (words)
     const keywordTokens = keywords.toLowerCase().split(/\s+/).filter(token => token.length > 0);
 
     if (keywordTokens.length > 0) {
@@ -100,32 +107,25 @@ app.get('/api/products', (req, res) => {
       const fieldsToSearch = [
         { name: 'name', normalizeSpaces: true },
         { name: 'description', normalizeSpaces: true },
-        { name: 'ideal_for', normalizeSpaces: false }, // Unlikely to contain compound words with varying spaces
-        { name: 'best_feature', normalizeSpaces: false } // Unlikely to contain compound words with varying spaces
+        { name: 'ideal_for', normalizeSpaces: false }, // Ideal for doesn't typically have compound words with spaces
+        { name: 'best_feature', normalizeSpaces: false } // Best feature doesn't typically have compound words with spaces
       ];
-      const fieldSearchConditions = [];
 
-      fieldsToSearch.forEach(fieldDef => {
-        const fieldName = fieldDef.name;
-        const needsNormalization = fieldDef.normalizeSpaces;
-
-        const tokenLikeConditions = keywordTokens.map(() => {
-          if (needsNormalization) {
-            // Apply REPLACE to remove spaces before comparison
-            return `lower(REPLACE(${fieldName}, ' ', '')) LIKE ?`;
-          }
-          return `lower(${fieldName}) LIKE ?`;
+      // For each keyword token, build an OR condition across all searchable fields
+      const tokenConditions = keywordTokens.map(token => {
+        const fieldOrConditions = fieldsToSearch.map(fieldDef => {
+          const fieldName = fieldDef.name;
+          // Apply REPLACE to remove spaces before comparison for relevant fields (e.g., "lawn mower" -> "lawnmower")
+          const columnExpression = fieldDef.normalizeSpaces ? `REPLACE(${fieldName}, ' ', '')` : fieldName;
+          params.push(`%${token}%`); // Each token needs its own param for each field it's checked against
+          return `lower(${columnExpression}) LIKE ?`;
         });
-
-        if (tokenLikeConditions.length > 0) {
-          fieldSearchConditions.push(`(${tokenLikeConditions.join(' AND ')})`);
-          keywordTokens.forEach(token => params.push(`%${token}%`));
-        }
+        // Combine field conditions for this single token with OR
+        return `(${fieldOrConditions.join(' OR ')})`;
       });
 
-      if (fieldSearchConditions.length > 0) {
-        query += ` AND (${fieldSearchConditions.join(' OR ')})`;
-      }
+      // Combine all token conditions with AND (product must contain ALL keywords, but they can be in any field)
+      query += ` AND (${tokenConditions.join(' AND ')})`;
     }
   }
   // --- END OF KEYWORD SEARCH ENHANCEMENT ---
@@ -172,7 +172,7 @@ app.get('/api/products', (req, res) => {
       return res.status(400).json({ error: 'Invalid value for hasRearRoller. Must be "true" or "false".' });
   }
 
-  // --- NEW: Price Filtering ---
+  // --- Price Filtering ---
   if (minPrice && !isNaN(parseFloat(minPrice))) {
     query += ' AND price >= ?';
     params.push(parseFloat(minPrice));
@@ -186,7 +186,7 @@ app.get('/api/products', (req, res) => {
   } else if (maxPrice && isNaN(parseFloat(maxPrice))) {
       return res.status(400).json({ error: 'Invalid value for maxPrice. Must be a number.' });
   }
-  // --- END NEW: Price Filtering ---
+  // --- END Price Filtering ---
 
   // Sorting
   if (sortBy) {
@@ -198,13 +198,15 @@ app.get('/api/products', (req, res) => {
       case 'name':
         orderByClause = 'name';
         break;
+      // Add other sortable fields as needed
       default:
         return res.status(400).json({ error: `Invalid sortBy parameter: ${sortBy}` });
     }
     const sortOrder = (order && order.toLowerCase() === 'desc') ? 'DESC' : 'ASC';
     query += ` ORDER BY ${orderByClause} ${sortOrder}`;
   } else {
-    // Default relevance sorting
+    // Default relevance sorting (can be more complex, e.g., based on views, sales, etc.)
+    // For now, no specific default relevance sorting is implemented beyond database's natural order
   }
 
   db.all(query, params, (err, rows) => {
@@ -218,6 +220,8 @@ app.get('/api/products', (req, res) => {
 
 // --- NEW ENDPOINT FOR LOGGING ---
 app.post('/api/submit-debug-log', async (req, res) => {
+  // Frontend sends logs as an array, with each logEntry being an object or string
+  // Example: [{"message": "User input: ...", "level": "INFO"}, ...]
   const { logs, sessionId, userId } = req.body;
 
   if (!logs || !Array.isArray(logs) || logs.length === 0) {
@@ -227,15 +231,18 @@ app.post('/api/submit-debug-log', async (req, res) => {
   try {
     const client = await logDbPool.connect();
     try {
-      await client.query('BEGIN');
+      await client.query('BEGIN'); // Start a transaction for multiple inserts
 
       for (const logEntry of logs) {
+        // Safely extract the log message and log level
         const logMessage = typeof logEntry === 'string' ? logEntry : logEntry.message;
         const logLevel = typeof logEntry === 'object' && logEntry.level ? logEntry.level : null;
 
+        // Ensure logMessage is always a string for the database, stringify if it's an object
         const finalLogMessage = typeof logMessage === 'string' ? logMessage : JSON.stringify(logMessage);
-        const timestamp = new Date().toISOString();
+        const timestamp = new Date().toISOString(); // Generate timestamp in ISO format
 
+        // INSERT query to match all columns in your debug_logs table
         const insertQuery = `
           INSERT INTO debug_logs (session_id, user_id, timestamp, log_message, log_level)
           VALUES ($1, $2, $3, $4, $5)
@@ -243,14 +250,14 @@ app.post('/api/submit-debug-log', async (req, res) => {
         await client.query(insertQuery, [sessionId, userId, timestamp, finalLogMessage, logLevel]);
       }
 
-      await client.query('COMMIT');
+      await client.query('COMMIT'); // Commit the transaction
       res.status(200).json({ message: 'Logs received and stored successfully.' });
     } catch (err) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK'); // Rollback on error
       console.error('Error inserting logs into PostgreSQL:', err);
       res.status(500).json({ error: 'Failed to store logs in database.' });
     } finally {
-      client.release();
+      client.release(); // Release client back to the pool
     }
   } catch (poolErr) {
     console.error('Error connecting to PostgreSQL pool:', poolErr);
