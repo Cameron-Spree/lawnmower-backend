@@ -16,22 +16,18 @@ app.use(cors());
 app.use(express.json());
 
 // --- PostgreSQL Pool for Logging (NEW) ---
-// This connects to your external PostgreSQL database.
-// Vercel will inject DATABASE_URL from your environment variables.
 const logDbPool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
-    // Required for some cloud providers like Supabase/Neon to connect securely
     rejectUnauthorized: false,
   },
 });
 
 logDbPool.on('error', (err) => {
   console.error('Unexpected error on idle PostgreSQL client', err);
-  process.exit(-1); // Exit process if critical error
+  process.exit(-1);
 });
 // --- END PostgreSQL Pool for Logging ---
-
 
 const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (err) => {
   if (err) {
@@ -73,14 +69,15 @@ app.get('/api/products', (req, res) => {
     productId,
     cuttingWidthCm,
     sortBy,
-    order
+    order,
+    minPrice, // NEW
+    maxPrice  // NEW
   } = req.query;
 
   // Filter by productId (if provided, this should be the primary filter)
   if (productId) {
     query += ' AND id = ?';
     params.push(productId);
-    // Execute query immediately for single product lookup
     db.get(query, params, (err, row) => {
       if (err) {
         console.error("Database query failed:", err);
@@ -89,38 +86,30 @@ app.get('/api/products', (req, res) => {
       if (!row) {
         return res.status(404).json({ error: 'Product not found' });
       }
-      res.json([row]); // Return as an array for consistency
+      res.json([row]);
     });
-    return; // Exit after sending single product response
+    return;
   }
 
   // --- START OF KEYWORD SEARCH ENHANCEMENT ---
   if (keywords) {
-    // Split keywords into individual tokens (words)
     const keywordTokens = keywords.toLowerCase().split(/\s+/).filter(token => token.length > 0);
-
     if (keywordTokens.length > 0) {
       const fieldsToSearch = ['name', 'description', 'ideal_for', 'best_feature'];
       const fieldSearchConditions = [];
-
-      // Build conditions for each field: (field LIKE %token1% AND field LIKE %token2% ...)
       fieldsToSearch.forEach(field => {
         const tokenLikeConditions = keywordTokens.map(() => `lower(${field}) LIKE ?`);
         if (tokenLikeConditions.length > 0) {
           fieldSearchConditions.push(`(${tokenLikeConditions.join(' AND ')})`);
-          // Add parameters for each token, for this specific field
           keywordTokens.forEach(token => params.push(`%${token}%`));
         }
       });
-
-      // Combine all field conditions with OR
       if (fieldSearchConditions.length > 0) {
         query += ` AND (${fieldSearchConditions.join(' OR ')})`;
       }
     }
   }
   // --- END OF KEYWORD SEARCH ENHANCEMENT ---
-
 
   // Strict category filtering (CRITICAL)
   if (category) {
@@ -134,19 +123,19 @@ app.get('/api/products', (req, res) => {
     params.push(brand);
   }
 
-  // Filter by power source (uses the query param 'powerSource' but filters by DB column 'power_source')
+  // Filter by power source
   if (powerSource) {
     query += ' AND lower(power_source) = lower(?)';
     params.push(powerSource);
   }
 
-  // Filter by drive type (uses the query param 'driveType' but filters by DB column 'drive_type')
+  // Filter by drive type
   if (driveType) {
     query += ' AND lower(drive_type) = lower(?)';
     params.push(driveType);
   }
 
-  // Filter by cutting width (uses the query param 'cuttingWidthCm' but filters by DB column 'cutting_width_cm')
+  // Filter by cutting width (numerical comparison)
   if (cuttingWidthCm && !isNaN(parseFloat(cuttingWidthCm))) {
     query += ' AND cutting_width_cm = ?';
     params.push(parseFloat(cuttingWidthCm));
@@ -163,6 +152,22 @@ app.get('/api/products', (req, res) => {
       return res.status(400).json({ error: 'Invalid value for hasRearRoller. Must be "true" or "false".' });
   }
 
+  // --- NEW: Price Filtering ---
+  if (minPrice && !isNaN(parseFloat(minPrice))) {
+    query += ' AND price >= ?';
+    params.push(parseFloat(minPrice));
+  } else if (minPrice && isNaN(parseFloat(minPrice))) {
+      return res.status(400).json({ error: 'Invalid value for minPrice. Must be a number.' });
+  }
+
+  if (maxPrice && !isNaN(parseFloat(maxPrice))) {
+    query += ' AND price <= ?';
+    params.push(parseFloat(maxPrice));
+  } else if (maxPrice && isNaN(parseFloat(maxPrice))) {
+      return res.status(400).json({ error: 'Invalid value for maxPrice. Must be a number.' });
+  }
+  // --- END NEW: Price Filtering ---
+
   // Sorting
   if (sortBy) {
     let orderByClause = '';
@@ -176,7 +181,6 @@ app.get('/api/products', (req, res) => {
       default:
         return res.status(400).json({ error: `Invalid sortBy parameter: ${sortBy}` });
     }
-
     const sortOrder = (order && order.toLowerCase() === 'desc') ? 'DESC' : 'ASC';
     query += ` ORDER BY ${orderByClause} ${sortOrder}`;
   } else {
@@ -194,7 +198,7 @@ app.get('/api/products', (req, res) => {
 
 // --- NEW ENDPOINT FOR LOGGING ---
 app.post('/api/submit-debug-log', async (req, res) => {
-  const { logs, sessionId, userId } = req.body; // Frontend sends these
+  const { logs, sessionId, userId } = req.body;
 
   if (!logs || !Array.isArray(logs) || logs.length === 0) {
     return res.status(400).json({ error: 'Invalid or empty logs array provided.' });
@@ -206,23 +210,17 @@ app.post('/api/submit-debug-log', async (req, res) => {
       await client.query('BEGIN');
 
       for (const logEntry of logs) {
-        // --- START: Changes for log_level extraction ---
-        // Safely extract the log message and log level
         const logMessage = typeof logEntry === 'string' ? logEntry : logEntry.message;
-        const logLevel = typeof logEntry === 'object' && logEntry.level ? logEntry.level : null; // This line extracts the 'level' property
+        const logLevel = typeof logEntry === 'object' && logEntry.level ? logEntry.level : null;
 
-        // Ensure logMessage is always a string for the database
         const finalLogMessage = typeof logMessage === 'string' ? logMessage : JSON.stringify(logMessage);
         const timestamp = new Date().toISOString();
 
-        // Updated INSERT query to include 'log_level' column
         const insertQuery = `
           INSERT INTO debug_logs (session_id, user_id, timestamp, log_message, log_level)
           VALUES ($1, $2, $3, $4, $5)
         `;
-        // Pass 'logLevel' as the fifth parameter to the query
         await client.query(insertQuery, [sessionId, userId, timestamp, finalLogMessage, logLevel]);
-        // --- END: Changes for log_level extraction ---
       }
 
       await client.query('COMMIT');
@@ -239,6 +237,5 @@ app.post('/api/submit-debug-log', async (req, res) => {
     res.status(500).json({ error: 'Database connection error for logging.' });
   }
 });
-// --- END NEW ENDPOINT ---
 
 export default app;
